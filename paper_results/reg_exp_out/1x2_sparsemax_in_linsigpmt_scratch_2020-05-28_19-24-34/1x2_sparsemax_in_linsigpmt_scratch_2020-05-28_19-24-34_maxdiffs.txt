@@ -1,0 +1,3 @@
+max overall util diff 4.415119016470959e-06
+max overall alloc diff 5.8589709153733516e-06
+max overall payment diff 4.286697409844331e-06
