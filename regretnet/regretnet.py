@@ -1,99 +1,9 @@
 import torch
 from torch import nn, optim
-from torch.utils.data import Dataset, DataLoader
-import torch.nn.functional as F
-import numpy as np
 from tqdm import tqdm as tqdm
 import torch.nn.init
 import regretnet.ibp as ibp
-from util import plot_12_model, plot_payment, plot_loss, plot_regret
-from regretnet.datasets import generate_dataset_1x2, generate_dataset_nxk
-import json
-import pdb
 
-class RegretNetUnitDemand(nn.Module):
-    def __init__(self, n_agents, n_items, clamp_op=None, hidden_layer_size=128, n_hidden_layers=2, activation='tanh'):
-        super(RegretNetUnitDemand, self).__init__()
-
-        if activation == 'tanh':
-            self.act = ibp.Tanh
-        else:
-            self.act = ibp.ReLU
-        self.clamp_op = clamp_op
-        if clamp_op is None:
-            def cl(x):
-                x.clamp_min_(0.0)
-                x.clamp_max_(1.0)
-            self.clamp_opt = cl
-        else:
-            self.clamp_opt = clamp_op
-
-        self.n_agents = n_agents
-        self.n_items = n_items
-
-        self.input_size = self.n_agents * self.n_items
-        self.hidden_layer_size = hidden_layer_size
-        # outputs are agents (+dummy agent) per item (+ dummy item), plus payments per agent
-        self.allocations_size = (self.n_agents + 1) * (self.n_items + 1)
-        self.payments_size = self.n_agents
-
-        self.nn_model = nn.Sequential(
-            *([ibp.Linear(self.input_size, self.hidden_layer_size), self.act()] +
-              [ibp.Linear(self.hidden_layer_size, self.hidden_layer_size), self.act()] * n_hidden_layers)
-        )
-
-        self.allocation_head = ibp.Linear(self.hidden_layer_size, self.allocations_size*2)
-        self.fractional_payment_head = nn.Sequential(
-            ibp.Linear(self.hidden_layer_size, self.payments_size), ibp.Sigmoid()
-        )
-
-    def glorot_init(self):
-        """
-        reinitializes with glorot (aka xavier) uniform initialization
-        """
-
-        def initialize_fn(layer):
-            if type(layer) == nn.Linear:
-                torch.nn.init.xavier_uniform_(layer.weight)
-
-        self.apply(initialize_fn)
-
-    def forward(self, reports):
-        x = reports.view(-1, self.n_agents * self.n_items)
-        x = self.nn_model(x)
-
-        alloc_scores = self.allocation_head(x)
-        alloc_first = F.softmax(alloc_scores[:, 0:self.allocations_size].view(-1, self.n_agents + 1, self.n_items + 1), dim=1)
-        alloc_second = F.softmax(alloc_scores[:, self.allocations_size:self.allocations_size*2].view(-1, self.n_agents + 1, self.n_items + 1), dim=2)
-        allocs = torch.min(alloc_first, alloc_second)
-
-        payments = self.fractional_payment_head(x) * torch.sum(
-            allocs[:, :-1, :-1] * reports, dim=2
-        )
-
-        return allocs[:, :-1, :-1], payments
-
-    def interval(self, reports_upper, reports_lower):
-        softmax1 = ibp.Softmax(dim=1)
-        softmax2 = ibp.Softmax(dim=2)
-
-        upper = reports_upper.view(-1, self.n_agents * self.n_items)
-        lower = reports_lower.view(-1, self.n_agents * self.n_items)
-        upper, lower = self.nn_model.interval(upper, lower)
-        allocs_scores_upper, allocs_scores_lower = self.allocation_head.interval(upper, lower)
-        alloc_first_upper, alloc_first_lower = softmax1.interval(allocs_scores_upper[:, 0:self.allocations_size].view(-1, self.n_agents + 1, self.n_items + 1),
-                                                                 allocs_scores_lower[:, 0:self.allocations_size].view(-1, self.n_agents + 1, self.n_items + 1))
-        alloc_second_upper, alloc_second_lower = softmax2.interval(allocs_scores_upper[:, self.allocations_size:self.allocations_size*2].view(-1, self.n_agents + 1, self.n_items + 1),
-                                                                   allocs_scores_lower[:, self.allocations_size:self.allocations_size*2].view(-1, self.n_agents + 1, self.n_items + 1),)
-
-        allocs_upper, allocs_lower = ibp.min_interval( (alloc_first_upper, alloc_first_lower), (alloc_second_upper, alloc_second_lower) )
-
-
-        frac_upper, frac_lower = self.fractional_payment_head.interval(upper, lower)
-        payments_upper, payments_lower = frac_upper * torch.sum(allocs_upper[:, :-1, :-1] * reports_upper, dim=2), \
-                                         frac_lower * torch.sum(allocs_lower[:, :-1, :-1] * reports_lower, dim=2)
-
-        return (allocs_upper[:, :-1, :-1], allocs_lower[:, :-1, :-1]), (payments_upper, payments_lower)
 
 class RegretNet(nn.Module):
     def __init__(self, n_agents, n_items, hidden_layer_size=128, clamp_op=None, n_hidden_layers=2,
