@@ -4,6 +4,112 @@ from tqdm import tqdm as tqdm
 import torch.nn.init
 import regretnet.ibp as ibp
 
+class UtilRegretNet(nn.Module):
+    def __init__(self, n_agents, n_items, hidden_layer_size=128, clamp_op=None, n_hidden_layers=2,
+                 activation='tanh', u_activation='softplus', a_activation='softmax', separate=False):
+        super(UtilRegretNet, self).__init__()
+
+        # this is for additive valuations only
+        self.activation = activation
+        if activation == 'tanh':
+            self.act = ibp.Tanh
+        else:
+            self.act = ibp.ReLU
+        self.clamp_opt = clamp_op
+        if clamp_op is None:
+            def cl(x):
+                x.clamp_min_(0.0)
+                x.clamp_max_(1.0)
+
+            self.clamp_op = cl
+        else:
+            self.clamp_op = clamp_op
+
+        self.u_activation = u_activation
+        self.a_activation = a_activation
+        self.n_agents = n_agents
+        self.n_items = n_items
+
+        self.input_size = self.n_agents * self.n_items
+        self.hidden_layer_size = hidden_layer_size
+        self.n_hidden_layers = n_hidden_layers
+        self.separate = separate
+
+        self.util_size = self.n_agents
+
+        if self.a_activation == 'softmax':
+            self.allocations_size = (self.n_agents + 1) * self.n_items
+            self.allocation_head = [ibp.Linear(self.hidden_layer_size, self.allocations_size),
+                                    ibp.View((-1, self.n_agents + 1, self.n_items)),
+                                    ibp.Softmax(dim=1),
+                                    ibp.View_Cut()]
+        elif self.a_activation == 'sparsemax':
+            self.allocations_size = (self.n_agents + 1) * self.n_items
+            self.allocation_head = [ibp.Linear(self.hidden_layer_size, self.allocations_size),
+                                    ibp.View((-1, self.n_agents + 1, self.n_items)),
+                                    ibp.Sparsemax(dim=1),
+                                    ibp.View_Cut()]
+        elif self.a_activation == 'full_sigmoid_linear':
+            self.allocations_size = self.n_agents * self.n_items
+            self.allocation_head = [ibp.Linear(self.hidden_layer_size, self.allocations_size),
+                                    ibp.SigmoidLinear(),
+                                    ibp.View((-1, self.n_agents, self.n_items))]
+        elif self.a_activation == 'full_relu_clipped':
+            self.allocations_size = self.n_agents * self.n_items
+            self.allocation_head = [ibp.Linear(self.hidden_layer_size, self.allocations_size),
+                                    ibp.ReLUClipped(lower=0, upper=self.n_items),
+                                    ibp.View((-1, self.n_agents, self.n_items))]
+        elif self.a_activation == 'full_relu_div':
+            self.allocations_size = self.n_agents * self.n_items
+            self.allocation_head = [ibp.Linear(self.hidden_layer_size, self.allocations_size),
+                                    ibp.ReLUClipped(lower=0, upper=1),
+                                    ibp.View((-1, self.n_agents, self.n_items)),
+                                    ibp.Allo_Div(dim=1)]
+        elif self.a_activation == 'full_linear':
+            self.allocations_size = self.n_agents * self.n_items
+            self.allocation_head = [ibp.Linear(self.hidden_layer_size, self.allocations_size),
+                                    ibp.View((-1, self.n_agents, self.n_items))]
+        else:
+            raise ValueError(f"{self.a_activation} behavior is not defined")
+
+        self.util_head = [
+            ibp.Linear(self.hidden_layer_size, self.hidden_layer_size),
+            ibp.Linear(self.hidden_layer_size, self.util_size), nn.Softplus()
+        ]
+        if separate:
+            self.nn_model = ibp.Sequential(
+                *([ibp.Identity()])
+            )
+            self.util_head = [ibp.Linear(self.input_size, self.hidden_layer_size), self.act()] + \
+                                [l for i in range(n_hidden_layers)
+                                 for l in (ibp.Linear(self.hidden_layer_size, self.hidden_layer_size), self.act())] + \
+                                self.util_head
+
+            self.util_head = ibp.Sequential(*self.util_head)
+            self.allocation_head = [ibp.Linear(self.input_size, self.hidden_layer_size), self.act()] + \
+                                   [l for i in range(n_hidden_layers)
+                                    for l in (ibp.Linear(self.hidden_layer_size, self.hidden_layer_size), self.act())] + \
+                                   self.allocation_head
+            self.allocation_head = ibp.Sequential(*self.allocation_head)
+        else:
+            self.nn_model = ibp.Sequential(
+                *([ibp.Linear(self.input_size, self.hidden_layer_size), self.act()] +
+                  [l for i in range(n_hidden_layers)
+                   for l in (ibp.Linear(self.hidden_layer_size, self.hidden_layer_size), self.act())])
+            )
+            self.allocation_head = ibp.Sequential(*self.allocation_head)
+            self.util_head = ibp.Sequential(*self.util_head)
+
+    def forward(self, reports):
+        x = reports.view(-1, self.n_agents * self.n_items)
+        x = self.nn_model(x)
+
+        allocs = self.allocation_head(x)
+        utils = self.util_head(x)
+        payments = torch.sum(allocs * reports, dim=2) - utils
+
+        return allocs, payments
+
 
 class RegretNet(nn.Module):
     def __init__(self, n_agents, n_items, hidden_layer_size=128, clamp_op=None, n_hidden_layers=2,

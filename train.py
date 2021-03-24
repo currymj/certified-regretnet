@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from regretnet.datasets import generate_dataset_1x2, generate_dataset_nxk
-from regretnet.regretnet import RegretNet, train_loop, test_loop
+from regretnet.regretnet import UtilRegretNet, train_loop, test_loop
 from torch.utils.tensorboard import SummaryWriter
 from regretnet.datasets import Dataloader
 from util import plot_12_model, plot_payment, plot_loss, plot_regret
@@ -12,13 +12,13 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 parser = ArgumentParser()
 parser.add_argument('--random-seed', type=int, default=0)
-parser.add_argument('--num-examples', type=int, default=60000)
-parser.add_argument('--test-num-examples', type=int, default=3000)
+parser.add_argument('--num-examples', type=int, default=600)
+parser.add_argument('--test-num-examples', type=int, default=300)
 parser.add_argument('--n-agents', type=int, default=1)
 parser.add_argument('--n-items', type=int, default=2)
-parser.add_argument('--num-epochs', type=int, default=256)
-parser.add_argument('--batch-size', type=int, default=2048)
-parser.add_argument('--test-batch-size', type=int, default=512)
+parser.add_argument('--num-epochs', type=int, default=2)
+parser.add_argument('--batch-size', type=int, default=32)
+parser.add_argument('--test-batch-size', type=int, default=32)
 parser.add_argument('--model-lr', type=float, default=1e-2)
 parser.add_argument('--misreport-lr', type=float, default=2e-2)
 parser.add_argument('--misreport-iter', type=int, default=25)
@@ -40,7 +40,7 @@ parser.add_argument('--ir_penalty_power', type=float, default=2.0)
 parser.add_argument('--resume', default="")
 
 #architectural arguments
-parser.add_argument('--p_activation', default='full_relu_clipped')
+parser.add_argument('--u_activation', default='softplus')
 parser.add_argument('--a_activation', default='softmax')
 parser.add_argument('--hidden_layer_size', type=int, default=128)
 parser.add_argument('--n_hidden_layers', type=int, default=2)
@@ -58,9 +58,8 @@ if __name__ == "__main__":
     writer = SummaryWriter(log_dir=f"run/{args.name}",
                            comment=f"{args}")
 
-
-    model = RegretNet(args.n_agents, args.n_items, activation='relu', hidden_layer_size=args.hidden_layer_size,
-                      n_hidden_layers=args.n_hidden_layers, p_activation=args.p_activation,
+    model = UtilRegretNet(args.n_agents, args.n_items, activation='relu', hidden_layer_size=args.hidden_layer_size,
+                      n_hidden_layers=args.n_hidden_layers, u_activation=args.u_activation,
                       a_activation=args.a_activation, separate=args.separate).to(DEVICE)
     if args.resume:
         checkpoint = torch.load(args.resume)
@@ -68,7 +67,7 @@ if __name__ == "__main__":
 
     if args.teacher_model != "":
         checkpoint = torch.load(args.teacher_model)
-        teachermodel = RegretNet(**checkpoint['arch'])
+        teachermodel = UtilRegretNet(**checkpoint['arch'])
         teachermodel.load_state_dict(checkpoint['state_dict'], strict=False)
         teachermodel.to(DEVICE)
     else:
