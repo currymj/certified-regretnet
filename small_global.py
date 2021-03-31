@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import time
 
-from regretnet.mipcertify.model import clip_relu_convert
+from regretnet.mipcertify.model import clip_relu_convert, simplify_network, sigmoid_linear_convert
 from regretnet.regretnet import RegretNet, calc_agent_util
 from regretnet.mipcertify.mip_solver import MIPNetwork
 
@@ -10,9 +10,10 @@ torch.manual_seed(1234)
 np.random.seed(1234)
 
 def zero_one_input_dom(truthful_input):
-    return torch.stack((torch.zeros_like(truthful_input).flatten(), 0.05*torch.ones_like(truthful_input).flatten())).T
+    return torch.stack((torch.zeros_like(truthful_input).flatten(), 0.3*torch.ones_like(truthful_input).flatten())).T
 
-model_name = '2x2_sparsemax_linearpmt_distill_fast'
+# model_name = '2x2_sparsemax_linearpmt_distill_fast'
+model_name = '2x2_sparsemax_in_linsigpmt_scratch_fast'
 path = f"model/{model_name}.pt"
 checkpoint = torch.load(path, map_location=torch.device('cpu'))
 curr_activation = checkpoint['arch']['p_activation']
@@ -22,11 +23,24 @@ if not inner_product:
 model = RegretNet(**checkpoint['arch']).to('cpu')
 model.load_state_dict(checkpoint['state_dict'])
 
-payment_head = clip_relu_convert(model.payment_head)
-alloc_head = model.allocation_head
-mipnet = MIPNetwork(
-    model.nn_model, payment_head, alloc_head, model.n_agents, model.n_items, fractional_payment=False
-)
+if inner_product:
+    print('inner product')
+    payment_head = simplify_network(sigmoid_linear_convert(model.payment_head))
+    alloc_head = model.allocation_head
+    mipnet = MIPNetwork(
+        model.nn_model, payment_head, alloc_head, model.n_agents, model.n_items, fractional_payment=True
+    )
+else:
+    payment_head = clip_relu_convert(model.payment_head)
+    alloc_head = model.allocation_head
+    mipnet = MIPNetwork(
+        model.nn_model, payment_head, alloc_head, model.n_agents, model.n_items, fractional_payment=False
+    )
+# payment_head = clip_relu_convert(model.payment_head)
+# alloc_head = model.allocation_head
+# mipnet = MIPNetwork(
+#     model.nn_model, payment_head, alloc_head, model.n_agents, model.n_items, fractional_payment=False
+# )
 
 truthful_input = torch.ones(model.n_agents, model.n_items)
 truthful_allocs, truthful_payments = model(truthful_input)
