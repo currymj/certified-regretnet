@@ -55,7 +55,7 @@ start_solve = time.time()
 point_was_found, result_tuple, num_states = mipnet.solve(input_dom, truthful_util)
 end_solve = time.time()
 
-print(mipnet.final_util_expr.getValue() - mipnet.final_util_expr_truthful.getValue())
+print('max regret', mipnet.final_util_expr.getValue() - mipnet.final_util_expr_truthful.getValue())
 # first step: make sure can get local bound for model at random point
 
 # need to: convert and linearize model to get upper and lower bounds for all relu
@@ -77,10 +77,10 @@ truthful_util = (a*truthful_bid).sum(dim=-1) - p
 
 print('better bid', better_bid)
 print('truthful bid', truthful_bid)
-print('better gurobi', mipnet.final_util_expr.getValue())
-print('truthful gurobi', mipnet.final_util_expr_truthful.getValue())
-print('better pytorch', misreport_util)
-print('truthful pytorch', truthful_util)
+print('better gurobi util', mipnet.final_util_expr.getValue())
+print('truthful gurobi util', mipnet.final_util_expr_truthful.getValue())
+print('better pytorch util', misreport_util)
+print('truthful pytorch util', truthful_util)
 
 # modify MIP code with following:
 # two sets of input variables
