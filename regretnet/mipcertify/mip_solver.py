@@ -270,6 +270,7 @@ class MIPNetwork:
             raise NotImplementedError("Unknown bound computation method.")
 
         self.gurobi_vars = []
+        self.gurobi_vars_truthful = []
         self.model = grb.Model()
         self.model.setParam('OutputFlag', False)
         self.model.setParam('Threads', 1)
@@ -297,22 +298,44 @@ class MIPNetwork:
         else:
             raise Exception(f"input shape is {inp_domain.shape} but it should be upper and lower bounds for a flat linear input (i.e. N x 2)")
         self.gurobi_vars.append(inp_gurobi_vars)
+        self.gurobi_vars_truthful.append(inp_gurobi_vars_truthful)
 
         self.construct_model_layers(self.gurobi_vars, self.layers, self.lower_bounds, self.upper_bounds, var_name_str='trunk')
+        self.construct_model_layers(self.gurobi_vars_truthful, self.layers, self.lower_bounds, self.upper_bounds, var_name_str='trunk_truthful')
+
 
         self.payment_gurobi_vars = []
+        self.payment_gurobi_vars_truthful = []
+
         self.payment_gurobi_vars.append(self.gurobi_vars[-1]) # the inputs to payment are the final ReLUs of trunk
+        self.payment_gurobi_vars_truthful.append(self.gurobi_vars_truthful[-1])
 
         self.construct_model_layers(self.payment_gurobi_vars, self.payment_layers, self.payment_lower_bounds, self.payment_upper_bounds, var_name_str='payment')
+        self.construct_model_layers(self.payment_gurobi_vars_truthful, self.payment_layers, self.payment_lower_bounds, self.payment_upper_bounds, var_name_str='payment_truthful')
 
         self.allocation_gurobi_vars = []
+        self.allocation_gurobi_vars_truthful = []
+
         self.allocation_gurobi_vars.append(self.gurobi_vars[-1])
+        self.allocation_gurobi_vars_truthful.append(self.gurobi_vars_truthful[-1])
+
+
         self.construct_model_layers(self.allocation_gurobi_vars, self.allocation_layers, self.allocation_lower_bounds, self.allocation_upper_bounds, var_name_str='allocation')
+        self.construct_model_layers(self.allocation_gurobi_vars_truthful, self.allocation_layers, self.allocation_lower_bounds, self.allocation_upper_bounds, var_name_str='allocation_truthful')
 
         final_alloc = self.allocation_gurobi_vars[-1]
         final_player_alloc = final_alloc[self.player_ind, :]
+
+        final_alloc_truthful = self.allocation_gurobi_vars_truthful[-1]
+        final_player_alloc_truthful = final_alloc_truthful[self.player_ind, :]
+
+        shaped_input_vars_truthful =np.reshape(np.array(inp_gurobi_vars_truthful), (self.n_agents, self.n_items))
+        player_input_val_truthful = shaped_input_vars_truthful[self.player_ind, :]
+        truthful_alloc_value_expr = grb.quicksum(
+            player_input_val_truthful[i] * final_player_alloc_truthful[i] for i in range(self.n_items))
         if not self.fractional_payment:
             self.final_player_payment = self.payment_gurobi_vars[-1][self.player_ind]
+            self.final_player_payment_truthful = self.payment_gurobi_vars_truthful[-1][self.player_ind]
         else:
             shaped_input_vars = np.reshape(np.array(self.gurobi_vars[0]), (self.n_agents, self.n_items))
             player_input_val = shaped_input_vars[self.player_ind, :]
@@ -322,15 +345,29 @@ class MIPNetwork:
             self.model.addConstr(alloc_value == alloc_value_expr)
             self.final_player_payment = frac_payment*alloc_value
 
+            # fractional payment coming out of the truthful network
+            frac_payment_truthful = self.payment_gurobi_vars_truthful[-1][self.player_ind]
+            # allocation value coming out of the truthful network
+            alloc_value_truthful = self.model.addVar(name='player_alloc_value_truthful')
+            self.model.addConstr(alloc_value_truthful == truthful_alloc_value_expr)
+            self.final_player_payment_truthful = frac_payment_truthful*alloc_value_truthful
+
+
+
+
         self.model.setParam("NonConvex", 2) # needed for quadratic equality constraints (Gurobi 9.0 only)
 
 
         # player_truthful_input = truthful_input[self.player_ind, :]
         # self.final_util_expr = grb.LinExpr(player_truthful_input, final_player_alloc) - self.final_player_payment
-        shaped_input_vars_truthful =np.reshape(np.array(inp_gurobi_vars_truthful), (self.n_agents, self.n_items))
-        player_input_val_truthful = shaped_input_vars_truthful[self.player_ind, :]
-        truthful_alloc_value = grb.quicksum(player_input_val_truthful[i]*final_player_alloc[i] for i in range(self.n_items))
-        self.final_util_expr = truthful_alloc_value - self.final_player_payment
+
+        # value of a(b) allocation under truthful bid v
+        untruthful_alloc_value = grb.quicksum(player_input_val_truthful[i]*final_player_alloc[i] for i in range(self.n_items))
+        # final util when misreporting, under truthful valuation
+        self.final_util_expr = untruthful_alloc_value - self.final_player_payment
+        self.final_util_expr_truthful = truthful_alloc_value_expr - self.final_player_payment_truthful
+
+
 
         if not use_obj_function:
             raise NotImplementedError("you should be looking for a global max")
@@ -339,7 +376,7 @@ class MIPNetwork:
             self.check_obj_value_callback = False
         else:
             # maximize the final utility
-            self.model.setObjective(self.final_util_expr, grb.GRB.MAXIMIZE)
+            self.model.setObjective(self.final_util_expr - self.final_util_expr_truthful, grb.GRB.MAXIMIZE)
 
             # TODO set this to True and fix the callback code
             # it's not clear that we actually want to do callbacks for this case though

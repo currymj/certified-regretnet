@@ -1,8 +1,11 @@
 import torch
+import numpy as np
 import time
 from regretnet.regretnet import RegretNet, calc_agent_util
 from regretnet.mipcertify.mip_solver import MIPNetwork
 
+torch.manual_seed(1234)
+np.random.seed(1234)
 
 def convert_input_dom(truthful_input, player_index):
     """
@@ -38,7 +41,7 @@ start_solve = time.time()
 point_was_found, result_tuple, num_states = mipnet.solve(input_dom, truthful_util)
 end_solve = time.time()
 
-print(mipnet.final_util_expr.getValue())
+print(mipnet.final_util_expr.getValue() - mipnet.final_util_expr_truthful.getValue())
 # first step: make sure can get local bound for model at random point
 
 # need to: convert and linearize model to get upper and lower bounds for all relu
