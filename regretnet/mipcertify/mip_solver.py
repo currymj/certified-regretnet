@@ -290,11 +290,22 @@ class MIPNetwork:
                                                  name='inp')
             inp_gurobi_vars = [var for key, var in inp_gurobi_vars.items()]
 
-            inp_gurobi_vars_truthful = self.model.addVars([i for i in range(inp_domain.numel() // 2)],
-                                                 lb=self.lower_bounds[0],
-                                                 ub=self.upper_bounds[0],
+            player_lb = self.lower_bounds[0].view(self.n_agents, self.n_items)[player_ind, :]
+            player_ub = self.upper_bounds[0].view(self.n_agents, self.n_items)[player_ind, :]
+            new_truthful_vars = self.model.addVars([i for i in range(self.n_items)],
+                                                 lb=player_lb,
+                                                 ub=player_ub,
                                                  name='inp_truthful')
-            inp_gurobi_vars_truthful = [var for key, var in inp_gurobi_vars_truthful.items()]
+            new_truthful_vars = [var for key, var in new_truthful_vars.items()]
+            # pick out non player_ind vars only from inp_gurobi_vars
+            inp_gurobi_vars_truthful = []
+            for i in range(self.n_agents):
+                for j in range(self.n_items):
+                    flat_index = 2*i + j
+                    if i == player_ind:
+                        inp_gurobi_vars_truthful.append(new_truthful_vars[j])
+                    else:
+                        inp_gurobi_vars_truthful.append(inp_gurobi_vars[flat_index])
         else:
             raise Exception(f"input shape is {inp_domain.shape} but it should be upper and lower bounds for a flat linear input (i.e. N x 2)")
         self.gurobi_vars.append(inp_gurobi_vars)

@@ -1,37 +1,37 @@
 import torch
 import numpy as np
 import time
+
+from regretnet.mipcertify.model import clip_relu_convert
 from regretnet.regretnet import RegretNet, calc_agent_util
 from regretnet.mipcertify.mip_solver import MIPNetwork
 
 torch.manual_seed(1234)
 np.random.seed(1234)
 
-def convert_input_dom(truthful_input, player_index):
-    """
-    Converts a truthful input into a set of input bounds for player i
-    :param truthful_input: the current set of truthful bids
-    :param player_index: the player whose input can vary
-    :return: a tensor of upper and lower bounds in the format which MIPNetwork can accept.
-    """
-    input_lbs = truthful_input.clone()
-    input_ubs = truthful_input.clone()
-    input_lbs[player_index, :] = 0.0
-    input_ubs[player_index, :] = 1.0
-    return torch.stack((input_lbs.flatten(), input_ubs.flatten())).T
+def zero_one_input_dom(truthful_input):
+    return torch.stack((torch.zeros_like(truthful_input).flatten(), 0.05*torch.ones_like(truthful_input).flatten())).T
 
-model = RegretNet(1, 2, activation='relu', hidden_layer_size=15,n_hidden_layers=1,p_activation='full_linear',a_activation='sparsemax',
-                  separate=False)
-payment_head = model.payment_head
+model_name = '2x2_sparsemax_linearpmt_distill_fast'
+path = f"model/{model_name}.pt"
+checkpoint = torch.load(path, map_location=torch.device('cpu'))
+curr_activation = checkpoint['arch']['p_activation']
+inner_product = curr_activation == "frac_sigmoid_linear"
+if not inner_product:
+    checkpoint['arch']['p_activation'] = 'full_relu_clipped'  # add on clip relu otherwise
+model = RegretNet(**checkpoint['arch']).to('cpu')
+model.load_state_dict(checkpoint['state_dict'])
+
+payment_head = clip_relu_convert(model.payment_head)
 alloc_head = model.allocation_head
 mipnet = MIPNetwork(
     model.nn_model, payment_head, alloc_head, model.n_agents, model.n_items, fractional_payment=False
 )
 
-truthful_input = torch.tensor([[0.5,0.5]])
+truthful_input = torch.ones(model.n_agents, model.n_items)
 truthful_allocs, truthful_payments = model(truthful_input)
 both_util = calc_agent_util(truthful_input, truthful_allocs, truthful_payments).flatten()
-input_dom = convert_input_dom(truthful_input, 0)
+input_dom = zero_one_input_dom(truthful_input)
 truthful_util = both_util[0].item()
 mipnet.setup_model(
     input_dom, truthful_input, truthful_util, use_obj_function=True, player_ind=0
@@ -45,6 +45,28 @@ print(mipnet.final_util_expr.getValue() - mipnet.final_util_expr_truthful.getVal
 # first step: make sure can get local bound for model at random point
 
 # need to: convert and linearize model to get upper and lower bounds for all relu
+var_results = []
+for v in mipnet.gurobi_vars[0]:
+    var_results.append(v.x)
+better_bid = torch.tensor(var_results).reshape(model.n_agents, model.n_items)
+
+truthful_results = []
+for v in mipnet.gurobi_vars_truthful[0]:
+    truthful_results.append(v.x)
+
+truthful_bid = torch.tensor(truthful_results).reshape(model.n_agents, model.n_items)
+
+a, p = model(better_bid)
+misreport_util = (a*truthful_bid).sum(dim=-1) - p
+a, p = model(truthful_bid)
+truthful_util = (a*truthful_bid).sum(dim=-1) - p
+
+print('better bid', better_bid)
+print('truthful bid', truthful_bid)
+print('better gurobi', mipnet.final_util_expr.getValue())
+print('truthful gurobi', mipnet.final_util_expr_truthful.getValue())
+print('better pytorch', misreport_util)
+print('truthful pytorch', truthful_util)
 
 # modify MIP code with following:
 # two sets of input variables
