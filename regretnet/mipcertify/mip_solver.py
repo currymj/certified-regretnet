@@ -288,6 +288,12 @@ class MIPNetwork:
                                                  ub=self.upper_bounds[0],
                                                  name='inp')
             inp_gurobi_vars = [var for key, var in inp_gurobi_vars.items()]
+
+            inp_gurobi_vars_truthful = self.model.addVars([i for i in range(inp_domain.numel() // 2)],
+                                                 lb=self.lower_bounds[0],
+                                                 ub=self.upper_bounds[0],
+                                                 name='inp_truthful')
+            inp_gurobi_vars_truthful = [var for key, var in inp_gurobi_vars_truthful.items()]
         else:
             raise Exception(f"input shape is {inp_domain.shape} but it should be upper and lower bounds for a flat linear input (i.e. N x 2)")
         self.gurobi_vars.append(inp_gurobi_vars)
@@ -315,12 +321,19 @@ class MIPNetwork:
             alloc_value = self.model.addVar(name='player_alloc_value')
             self.model.addConstr(alloc_value == alloc_value_expr)
             self.final_player_payment = frac_payment*alloc_value
-            self.model.setParam("NonConvex", 2) # needed for quadratic equality constraints (Gurobi 9.0 only)
+
+        self.model.setParam("NonConvex", 2) # needed for quadratic equality constraints (Gurobi 9.0 only)
 
 
-        player_truthful_input = truthful_input[self.player_ind, :]
-        self.final_util_expr = grb.LinExpr(player_truthful_input, final_player_alloc) - self.final_player_payment
+        # player_truthful_input = truthful_input[self.player_ind, :]
+        # self.final_util_expr = grb.LinExpr(player_truthful_input, final_player_alloc) - self.final_player_payment
+        shaped_input_vars_truthful =np.reshape(np.array(inp_gurobi_vars_truthful), (self.n_agents, self.n_items))
+        player_input_val_truthful = shaped_input_vars_truthful[self.player_ind, :]
+        truthful_alloc_value = grb.quicksum(player_input_val_truthful[i]*final_player_alloc[i] for i in range(self.n_items))
+        self.final_util_expr = truthful_alloc_value - self.final_player_payment
+
         if not use_obj_function:
+            raise NotImplementedError("you should be looking for a global max")
             self.model.addConstr(self.final_util_expr >= (truthful_util + regret_tolerance))
             self.model.setObjective(0, grb.GRB.MAXIMIZE)
             self.check_obj_value_callback = False
